@@ -1,7 +1,6 @@
 require('dotenv').config();
 const WebSocket = require('ws');
-const fetch = require('node-fetch');
-const { Blob } = require('buffer'); // <-- Add this line
+const { fetch, FormData, Blob } = require('undici');
 
 const PORT = process.env.PORT || 8080;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'YOUR_OPENAI_API_KEY';
