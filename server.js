@@ -7,7 +7,7 @@ process.on('unhandledRejection', function (reason, promise) {
 
 require('dotenv').config();
 const WebSocket = require('ws');
-const { fetch, FormData } = require('undici');
+const { fetch, FormData, Blob } = require('undici');
 
 const PORT = process.env.PORT || 8080;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'YOUR_OPENAI_API_KEY';
@@ -46,11 +46,9 @@ wss.on('connection', (ws) => {
 // Helper function to send audio to OpenAI Whisper API and get transcript
 async function transcribeAudio(audioBuffer) {
     const formData = new FormData();
-    // Append the buffer directly with filename and content type
-    formData.append('file', audioBuffer, {
-        filename: 'audio.wav',
-        contentType: 'audio/wav'
-    });
+    // Convert the buffer to a Blob before appending
+    const audioBlob = new Blob([audioBuffer], { type: 'audio/wav' });
+    formData.append('file', audioBlob, 'audio.wav');
     formData.append('model', 'whisper-1');
 
     const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
