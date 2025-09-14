@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import { WebSocketServer } from 'ws';
 import { OpenAI } from 'openai';
