@@ -1,68 +1,64 @@
-process.on('uncaughtException', function (err) {
-    console.error('Uncaught Exception:', err);
-});
-process.on('unhandledRejection', function (reason, promise) {
-    console.error('Unhandled Rejection:', reason);
-});
-
 require('dotenv').config();
+
 const WebSocket = require('ws');
+const fs = require('fs');
 const FormData = require('form-data');
-const fetch = require('node-fetch');
+const axios = require('axios');
 
-const PORT = process.env.PORT || 8080;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'YOUR_OPENAI_API_KEY';
+const wss = new WebSocket.Server({ port: 8080 });
 
-// Start WebSocket server
-const wss = new WebSocket.Server({ port: PORT }, () => {
-    console.log(`WebSocket server running on port ${PORT}`);
-});
+wss.on('connection', function connection(ws) {
+    let audioChunks = [];
+    console.log('WebSocket client connected');
 
-wss.on('connection', (ws) => {
-    console.log('Client connected');
-
-    ws.on('message', async (message, isBinary) => {
-        console.log('Received message. isBinary:', isBinary);
-
-        if (isBinary) {
-            try {
-                const transcript = await transcribeAudio(message);
-                ws.send(transcript || 'No transcript received.');
-            } catch (err) {
-                console.error('Error during transcription:', err);
-                ws.send('Error during transcription');
-            }
+    ws.on('message', function incoming(data) {
+        if (Buffer.isBuffer(data)) {
+            audioChunks.push(data); // Receive and store each binary chunk
         } else {
-            ws.send('Echo: ' + message.toString());
+            console.log('Received text:', data);
         }
     });
 
-    ws.on('close', () => {
-        console.log('Client disconnected');
+    ws.on('close', async function () {
+        console.log('WebSocket client disconnected, assembling WAV file...');
+        if (audioChunks.length === 0) {
+            console.error('No audio received.');
+            return;
+        }
+
+        // Reassemble the full WAV file from received chunks
+        const wavBuffer = Buffer.concat(audioChunks);
+
+        // Optionally save to disk for debugging
+        fs.writeFileSync('received_audio.wav', wavBuffer);
+
+        // Send to OpenAI Whisper API
+        try {
+            const form = new FormData();
+            form.append('file', wavBuffer, {
+                filename: 'audio.wav',
+                contentType: 'audio/wav'
+            });
+            form.append('model', 'whisper-1');
+
+            const openaiResponse = await axios.post(
+                'https://api.openai.com/v1/audio/transcriptions',
+                form,
+                {
+                    headers: {
+                        ...form.getHeaders(),
+                        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+                    }
+                }
+            );
+
+            console.log('Transcription result:', openaiResponse.data);
+            // Optionally send result back to ESP32 client
+            // ws.send(JSON.stringify(openaiResponse.data));
+        } catch (e) {
+            console.error('Error during transcription:', e.response?.data || e.message);
+        }
     });
 });
 
-async function transcribeAudio(audioBuffer) {
-    const formData = new FormData();
-    formData.append('file', audioBuffer, {
-        filename: 'audio.wav',
-        contentType: 'audio/wav'
-    });
-    formData.append('model', 'whisper-1');
-
-    const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-        method: 'POST',
-        headers: {
-            'Authorization': `Bearer ${OPENAI_API_KEY}`,
-        },
-        body: formData
-    });
-
-    if (!response.ok) {
-        console.error('OpenAI API error:', await response.text());
-        throw new Error('OpenAI API error');
-    }
-
-    const data = await response.json();
-    return data.text;
-}
+console.log('WebSocket server started on ws://localhost:8080');
