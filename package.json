@@ -16,8 +16,8 @@
     "node-fetch": "^3.3.2",
     "undici": "^7.16.0",
     "ws": "^8.18.3"
+  },
+  "engines": {
+    "node": ">=18"
   }
-}
-"engines": {
-  "node": ">=18"
 }
