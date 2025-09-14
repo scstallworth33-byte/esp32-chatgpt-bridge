@@ -1,64 +1,83 @@
-require('dotenv').config();
+import express from 'express';
+import { WebSocketServer } from 'ws';
+import { OpenAI } from 'openai';
+import tmp from 'tmp';
+import fs from 'fs/promises';
+import fetch from 'node-fetch';
 
-const WebSocket = require('ws');
-const fs = require('fs');
-const FormData = require('form-data');
-const axios = require('axios');
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-const wss = new WebSocket.Server({ port: 8080 });
+const app = express();
+const server = app.listen(8080, () => console.log('HTTP server running on port 8080'));
+const wss = new WebSocketServer({ server });
 
-wss.on('connection', function connection(ws) {
-    let audioChunks = [];
-    console.log('WebSocket client connected');
+app.get('/', (req, res) => res.send('ESP32 ChatGPT Bridge Server Running!'));
 
-    ws.on('message', function incoming(data) {
-        if (Buffer.isBuffer(data)) {
-            audioChunks.push(data); // Receive and store each binary chunk
-        } else {
-            console.log('Received text:', data);
+wss.on('connection', ws => {
+  console.log('WebSocket client connected');
+  let audioChunks = [];
+
+  ws.on('message', async (data, isBinary) => {
+    if (!isBinary) return;
+    audioChunks.push(data);
+  });
+
+  ws.on('close', async () => {
+    console.log('WebSocket client disconnected, assembling WAV file...');
+    if (audioChunks.length === 0) return;
+
+    // Save the received WAV file to a temp location
+    const wavFile = tmp.tmpNameSync({ postfix: '.wav' });
+    await fs.writeFile(wavFile, Buffer.concat(audioChunks));
+
+    try {
+      // Transcribe using OpenAI Whisper
+      const transcription = await openai.audio.transcriptions.create({
+        file: fs.createReadStream(wavFile),
+        model: 'whisper-1'
+      });
+      console.log('Transcription:', transcription.text);
+
+      // Get ChatGPT response
+      const chatRes = await openai.chat.completions.create({
+        model: 'gpt-3.5-turbo',
+        messages: [
+          { role: 'user', content: transcription.text }
+        ]
+      });
+      const replyText = chatRes.choices[0].message.content;
+      console.log('ChatGPT reply:', replyText);
+
+      // Generate TTS audio using OpenAI (WAV format)
+      const ttsRes = await fetch('https://api.openai.com/v1/audio/speech', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'tts-1',
+          input: replyText,
+          voice: 'onyx', // you can use 'nova', 'shimmer', etc.
+          response_format: 'wav'
+        })
+      });
+
+      if (!ttsRes.ok) throw new Error('TTS failed');
+      const wavBuffer = Buffer.from(await ttsRes.arrayBuffer());
+
+      // Send WAV back as binary over WebSocket
+      wss.clients.forEach(client => {
+        if (client.readyState === ws.OPEN) {
+          client.send(wavBuffer, { binary: true });
         }
-    });
+      });
 
-    ws.on('close', async function () {
-        console.log('WebSocket client disconnected, assembling WAV file...');
-        if (audioChunks.length === 0) {
-            console.error('No audio received.');
-            return;
-        }
-
-        // Reassemble the full WAV file from received chunks
-        const wavBuffer = Buffer.concat(audioChunks);
-
-        // Optionally save to disk for debugging
-        fs.writeFileSync('received_audio.wav', wavBuffer);
-
-        // Send to OpenAI Whisper API
-        try {
-            const form = new FormData();
-            form.append('file', wavBuffer, {
-                filename: 'audio.wav',
-                contentType: 'audio/wav'
-            });
-            form.append('model', 'whisper-1');
-
-            const openaiResponse = await axios.post(
-                'https://api.openai.com/v1/audio/transcriptions',
-                form,
-                {
-                    headers: {
-                        ...form.getHeaders(),
-                        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
-                    }
-                }
-            );
-
-            console.log('Transcription result:', openaiResponse.data);
-            // Optionally send result back to ESP32 client
-            // ws.send(JSON.stringify(openaiResponse.data));
-        } catch (e) {
-            console.error('Error during transcription:', e.response?.data || e.message);
-        }
-    });
+      // Clean up temp file
+      await fs.unlink(wavFile);
+      console.log('Audio reply sent.');
+    } catch (err) {
+      console.error('Error:', err);
+    }
+  });
 });
-
-console.log('WebSocket server started on ws://localhost:8080');
