@@ -7,7 +7,8 @@ process.on('unhandledRejection', function (reason, promise) {
 
 require('dotenv').config();
 const WebSocket = require('ws');
-const { fetch, FormData, Blob } = require('undici');
+const FormData = require('form-data');
+const fetch = require('node-fetch');
 
 const PORT = process.env.PORT || 8080;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || 'YOUR_OPENAI_API_KEY';
@@ -25,7 +26,6 @@ wss.on('connection', (ws) => {
 
         if (isBinary) {
             try {
-                // Send audio to OpenAI Whisper API
                 const transcript = await transcribeAudio(message);
                 ws.send(transcript || 'No transcript received.');
             } catch (err) {
@@ -33,7 +33,6 @@ wss.on('connection', (ws) => {
                 ws.send('Error during transcription');
             }
         } else {
-            // Echo text messages
             ws.send('Echo: ' + message.toString());
         }
     });
@@ -43,12 +42,12 @@ wss.on('connection', (ws) => {
     });
 });
 
-// Helper function to send audio to OpenAI Whisper API and get transcript
 async function transcribeAudio(audioBuffer) {
     const formData = new FormData();
-    // Convert the buffer to a Blob before appending
-    const audioBlob = new Blob([audioBuffer], { type: 'audio/wav' });
-    formData.append('file', audioBlob, 'audio.wav');
+    formData.append('file', audioBuffer, {
+        filename: 'audio.wav',
+        contentType: 'audio/wav'
+    });
     formData.append('model', 'whisper-1');
 
     const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
