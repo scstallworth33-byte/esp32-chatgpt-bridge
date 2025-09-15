@@ -4,6 +4,7 @@ import { WebSocketServer } from 'ws';
 import { OpenAI } from 'openai';
 import tmp from 'tmp';
 import fs from 'fs/promises';
+import { createReadStream } from 'fs'; // <-- Correct import for streams
 import fetch from 'node-fetch';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -34,7 +35,7 @@ wss.on('connection', ws => {
     try {
       // Transcribe using OpenAI Whisper
       const transcription = await openai.audio.transcriptions.create({
-        file: fs.createReadStream(wavFile),
+        file: createReadStream(wavFile), // <-- FIXED here
         model: 'whisper-1'
       });
       console.log('Transcription:', transcription.text);
@@ -64,7 +65,10 @@ wss.on('connection', ws => {
         })
       });
 
-      if (!ttsRes.ok) throw new Error('TTS failed');
+      if (!ttsRes.ok) {
+        const errorText = await ttsRes.text();
+        throw new Error('TTS failed: ' + errorText);
+      }
       const wavBuffer = Buffer.from(await ttsRes.arrayBuffer());
 
       // Send WAV back as binary over WebSocket
@@ -78,7 +82,11 @@ wss.on('connection', ws => {
       await fs.unlink(wavFile);
       console.log('Audio reply sent.');
     } catch (err) {
-      console.error('Error:', err);
+      if (err.response && err.response.text) {
+        err.response.text().then(text => console.error('API Error:', text));
+      } else {
+        console.error('Error:', err);
+      }
     }
   });
 });
