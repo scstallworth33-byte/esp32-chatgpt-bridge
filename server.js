@@ -73,4 +73,30 @@ wss.on('connection', ws => {
 
           if (!ttsRes.ok) {
             const errorText = await ttsRes.text();
-            throw new Error('T
+            throw new Error('TTS failed: ' + errorText);
+          }
+          const wavBuffer = Buffer.from(await ttsRes.arrayBuffer());
+
+          // Send WAV back as binary over WebSocket
+          ws.send(wavBuffer, { binary: true });
+          console.log('Audio reply sent.');
+
+          // Clean up temp file
+          await fs.unlink(wavFile);
+        } catch (err) {
+          if (err.response && err.response.text) {
+            err.response.text().then(text => console.error('API Error:', text));
+          } else {
+            console.error('Error:', err);
+          }
+          ws.send('Error processing request.', { binary: false });
+        }
+      }
+    }
+  });
+
+  ws.on('close', () => {
+    console.log('WebSocket client disconnected');
+    audioChunks = [];
+  });
+});
