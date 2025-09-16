@@ -1,12 +1,12 @@
-// server.js for ESP32 ChatGPT Bridge with VAD "done" message support
+import dotenv from 'dotenv';
+dotenv.config();
 
-require('dotenv').config();
-const fs = require('fs/promises');
-const { createReadStream } = require('fs');
-const tmp = require('tmp');
-const WebSocket = require('ws');
-const OpenAI = require('openai');
-const fetch = require('node-fetch');
+import fs from 'fs/promises';
+import { createReadStream } from 'fs';
+import tmp from 'tmp';
+import WebSocket, { WebSocketServer } from 'ws';
+import OpenAI from 'openai';
+import fetch from 'node-fetch';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -14,7 +14,7 @@ const openai = new OpenAI({
 
 const PORT = process.env.PORT || 8080;
 
-const wss = new WebSocket.Server({ port: PORT });
+const wss = new WebSocketServer({ port: PORT });
 
 console.log(`WebSocket server listening on port ${PORT}`);
 
@@ -73,30 +73,4 @@ wss.on('connection', ws => {
 
           if (!ttsRes.ok) {
             const errorText = await ttsRes.text();
-            throw new Error('TTS failed: ' + errorText);
-          }
-          const wavBuffer = Buffer.from(await ttsRes.arrayBuffer());
-
-          // Send WAV back as binary over WebSocket
-          ws.send(wavBuffer, { binary: true });
-          console.log('Audio reply sent.');
-
-          // Clean up temp file
-          await fs.unlink(wavFile);
-        } catch (err) {
-          if (err.response && err.response.text) {
-            err.response.text().then(text => console.error('API Error:', text));
-          } else {
-            console.error('Error:', err);
-          }
-          ws.send('Error processing request.', { binary: false });
-        }
-      }
-    }
-  });
-
-  ws.on('close', () => {
-    console.log('WebSocket client disconnected');
-    audioChunks = [];
-  });
-});
+            throw new Error('T
