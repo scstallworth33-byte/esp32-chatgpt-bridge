@@ -1,22 +1,19 @@
-import dotenv from 'dotenv';
-dotenv.config();
-
+import 'dotenv/config';
+import express from 'express';
+import { WebSocketServer } from 'ws';
+import { OpenAI } from 'openai';
+import tmp from 'tmp';
 import fs from 'fs/promises';
 import { createReadStream } from 'fs';
-import tmp from 'tmp';
-import WebSocket, { WebSocketServer } from 'ws';
-import OpenAI from 'openai';
 import fetch from 'node-fetch';
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-const PORT = process.env.PORT || 8080;
+const app = express();
+const server = app.listen(8080, () => console.log('HTTP server running on port 8080'));
+const wss = new WebSocketServer({ server });
 
-const wss = new WebSocketServer({ port: PORT });
-
-console.log(`WebSocket server listening on port ${PORT}`);
+app.get('/', (req, res) => res.send('ESP32 ChatGPT Bridge Server Running!'));
 
 wss.on('connection', ws => {
   console.log('WebSocket client connected');
@@ -26,15 +23,15 @@ wss.on('connection', ws => {
     if (isBinary) {
       audioChunks.push(data);
     } else {
-      const msg = data.toString();
-      console.log('Received text message:', msg);
-      if (msg.trim() === 'done') {
-        console.log('Received "done", assembling WAV file...');
+      // Expect "done" as a signal to start processing
+      if (data.toString() === "done") {
+        console.log('Received "done" from client, assembling WAV file...');
         if (audioChunks.length === 0) {
-          ws.send('No audio received.', { binary: false });
+          ws.send('No audio received!');
           return;
         }
 
+        // Save the received WAV file to a temp location
         const wavFile = tmp.tmpNameSync({ postfix: '.wav' });
         await fs.writeFile(wavFile, Buffer.concat(audioChunks));
 
@@ -66,7 +63,7 @@ wss.on('connection', ws => {
             body: JSON.stringify({
               model: 'tts-1',
               input: replyText,
-              voice: 'onyx',
+              voice: 'onyx', // you can use 'nova', 'shimmer', etc.
               response_format: 'wav'
             })
           });
@@ -77,19 +74,19 @@ wss.on('connection', ws => {
           }
           const wavBuffer = Buffer.from(await ttsRes.arrayBuffer());
 
-          // Send WAV back as binary over WebSocket
+          // Send WAV back as binary over WebSocket -- to this client only
           ws.send(wavBuffer, { binary: true });
-          console.log('Audio reply sent.');
 
           // Clean up temp file
           await fs.unlink(wavFile);
+          console.log('Audio reply sent.');
         } catch (err) {
           if (err.response && err.response.text) {
             err.response.text().then(text => console.error('API Error:', text));
           } else {
             console.error('Error:', err);
           }
-          ws.send('Error processing request.', { binary: false });
+          ws.send('Error: ' + err.message);
         }
       }
     }
