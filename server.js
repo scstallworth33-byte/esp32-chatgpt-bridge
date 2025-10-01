@@ -63,7 +63,7 @@ wss.on('connection', ws => {
             body: JSON.stringify({
               model: 'tts-1',
               input: replyText,
-              voice: 'nova', // <<--- FEMALE VOICE
+              voice: 'nova',
               response_format: 'wav'
             })
           });
@@ -74,12 +74,29 @@ wss.on('connection', ws => {
           }
           const wavBuffer = Buffer.from(await ttsRes.arrayBuffer());
 
-          // Send WAV back as binary over WebSocket -- to this client only
-          ws.send(wavBuffer, { binary: true });
+          // ======= PACED CHUNKED DELIVERY =======
+          const CHUNK_SIZE = 1024; // Should match ESP32
+          const SAMPLE_RATE = 24000; // Should match ESP32
+          const chunkIntervalMs = Math.round((CHUNK_SIZE / SAMPLE_RATE) * 1000); // ~43ms
 
-          // Clean up temp file
-          await fs.unlink(wavFile);
-          console.log('Audio reply sent.');
+          let offset = 0;
+          function sendChunk() {
+            if (offset < wavBuffer.length) {
+              const end = Math.min(offset + CHUNK_SIZE, wavBuffer.length);
+              ws.send(wavBuffer.slice(offset, end), { binary: true });
+              offset = end;
+              setTimeout(sendChunk, chunkIntervalMs);
+            } else {
+              ws.send('done'); // Optional: signal end of audio
+              console.log('Audio reply sent in paced chunks.');
+            }
+          }
+          sendChunk();
+          // ======= END PACED CHUNKED DELIVERY =======
+
+          // Clean up temp file -- can be done after audio finishes
+          setTimeout(async () => { await fs.unlink(wavFile); }, 10000);
+
         } catch (err) {
           if (err.response && err.response.text) {
             err.response.text().then(text => console.error('API Error:', text));
