@@ -23,7 +23,6 @@ wss.on('connection', ws => {
     if (isBinary) {
       audioChunks.push(data);
     } else {
-      // Expect "done" as a signal to start processing
       if (data.toString() === "done") {
         console.log('Received "done" from client, assembling WAV file...');
         if (audioChunks.length === 0) {
@@ -31,19 +30,16 @@ wss.on('connection', ws => {
           return;
         }
 
-        // Save the received WAV file to a temp location
         const wavFile = tmp.tmpNameSync({ postfix: '.wav' });
         await fs.writeFile(wavFile, Buffer.concat(audioChunks));
 
         try {
-          // Transcribe using OpenAI Whisper
           const transcription = await openai.audio.transcriptions.create({
             file: createReadStream(wavFile),
             model: 'whisper-1'
           });
           console.log('Transcription:', transcription.text);
 
-          // Get ChatGPT response
           const chatRes = await openai.chat.completions.create({
             model: 'gpt-3.5-turbo',
             messages: [
@@ -53,7 +49,6 @@ wss.on('connection', ws => {
           const replyText = chatRes.choices[0].message.content;
           console.log('ChatGPT reply:', replyText);
 
-          // Generate TTS audio using OpenAI (WAV format, female voice 'nova')
           const ttsRes = await fetch('https://api.openai.com/v1/audio/speech', {
             method: 'POST',
             headers: {
@@ -75,8 +70,8 @@ wss.on('connection', ws => {
           const wavBuffer = Buffer.from(await ttsRes.arrayBuffer());
 
           // ======= PACED CHUNKED DELIVERY =======
-          const CHUNK_SIZE = 2048; // Matches ESP32
-          const chunkIntervalMs = 43; // Matches ESP32
+          const CHUNK_SIZE = 1024; // Reduced chunk size matches ESP32
+          const chunkIntervalMs = 43; // Reduced interval matches ESP32
 
           let offset = 0;
           const intervalId = setInterval(() => {
@@ -86,12 +81,11 @@ wss.on('connection', ws => {
               offset = end;
             } else {
               clearInterval(intervalId);
-              ws.send('done'); // Optional: signal end of audio
+              ws.send('done');
               console.log('Audio reply sent in paced chunks.');
             }
           }, chunkIntervalMs);
 
-          // Clean up temp file -- can be done after audio finishes
           setTimeout(async () => { await fs.unlink(wavFile); }, 10000);
 
         } catch (err) {
