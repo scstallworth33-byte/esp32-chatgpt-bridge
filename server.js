@@ -75,24 +75,21 @@ wss.on('connection', ws => {
           const wavBuffer = Buffer.from(await ttsRes.arrayBuffer());
 
           // ======= PACED CHUNKED DELIVERY =======
-          const CHUNK_SIZE = 4096; // Should match ESP32
-          const SAMPLE_RATE = 24000; // Should match ESP32
-          const chunkIntervalMs = Math.round((CHUNK_SIZE / SAMPLE_RATE) * 1000); // ~43ms
+          const CHUNK_SIZE = 2048; // Should match ESP32
+          const chunkIntervalMs = 43; // ms
 
           let offset = 0;
-          function sendChunk() {
+          const intervalId = setInterval(() => {
             if (offset < wavBuffer.length) {
               const end = Math.min(offset + CHUNK_SIZE, wavBuffer.length);
               ws.send(wavBuffer.slice(offset, end), { binary: true });
               offset = end;
-              setTimeout(sendChunk, chunkIntervalMs);
             } else {
+              clearInterval(intervalId);
               ws.send('done'); // Optional: signal end of audio
               console.log('Audio reply sent in paced chunks.');
             }
-          }
-          sendChunk();
-          // ======= END PACED CHUNKED DELIVERY =======
+          }, chunkIntervalMs);
 
           // Clean up temp file -- can be done after audio finishes
           setTimeout(async () => { await fs.unlink(wavFile); }, 10000);
