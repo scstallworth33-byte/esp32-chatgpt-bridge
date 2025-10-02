@@ -75,8 +75,8 @@ wss.on('connection', ws => {
           const wavBuffer = Buffer.from(await ttsRes.arrayBuffer());
 
           // ======= PACED CHUNKED DELIVERY =======
-          const CHUNK_SIZE = 4096; // Should match ESP32
-          const chunkIntervalMs = 85; // ms
+          const CHUNK_SIZE = 1024; // Should match ESP32
+          const chunkIntervalMs = 21; // ms
 
           let offset = 0;
           const intervalId = setInterval(() => {
