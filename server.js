@@ -29,19 +29,19 @@ function addWavHeader(buffer, options = {}) {
 
   const header = Buffer.alloc(44);
 
-  header.write('RIFF', 0);
-  header.writeUInt32LE(36 + buffer.length, 4);
-  header.write('WAVE', 8);
-  header.write('fmt ', 12);
-  header.writeUInt32LE(16, 16);
-  header.writeUInt16LE(1, 20);
-  header.writeUInt16LE(numChannels, 22);
-  header.writeUInt32LE(sampleRate, 24);
-  header.writeUInt32LE(sampleRate * numChannels * bitDepth / 8, 28);
-  header.writeUInt16LE(numChannels * bitDepth / 8, 32);
-  header.writeUInt16LE(bitDepth, 34);
-  header.write('data', 36);
-  header.writeUInt32LE(buffer.length, 40);
+  header.write('RIFF', 0); // ChunkID
+  header.writeUInt32LE(36 + buffer.length, 4); // ChunkSize
+  header.write('WAVE', 8); // Format
+  header.write('fmt ', 12); // Subchunk1ID
+  header.writeUInt32LE(16, 16); // Subchunk1Size (16 for PCM)
+  header.writeUInt16LE(1, 20); // AudioFormat (1 = PCM)
+  header.writeUInt16LE(numChannels, 22); // NumChannels
+  header.writeUInt32LE(sampleRate, 24); // SampleRate
+  header.writeUInt32LE(sampleRate * numChannels * bitDepth / 8, 28); // ByteRate
+  header.writeUInt16LE(numChannels * bitDepth / 8, 32); // BlockAlign
+  header.writeUInt16LE(bitDepth, 34); // BitsPerSample
+  header.write('data', 36); // Subchunk2ID
+  header.writeUInt32LE(buffer.length, 40); // Subchunk2Size
 
   return Buffer.concat([header, buffer]);
 }
@@ -50,8 +50,8 @@ function addWavHeader(buffer, options = {}) {
 async function synthesizeSpeechGoogle(text) {
   const request = {
     input: { text },
-    voice: { languageCode: 'en-US', ssmlGender: 'FEMALE' },
-    audioConfig: { audioEncoding: 'LINEAR16', sampleRateHertz: 24000 },
+    voice: { languageCode: 'en-US', ssmlGender: 'FEMALE' }, // Change voice if needed
+    audioConfig: { audioEncoding: 'LINEAR16', sampleRateHertz: 24000 }, // WAV/PCM for ESP32
   };
   const [response] = await ttsClient.synthesizeSpeech(request);
   const rawPcmBuffer = Buffer.from(response.audioContent, 'base64');
@@ -59,65 +59,52 @@ async function synthesizeSpeechGoogle(text) {
   return wavBuffer;
 }
 
-// === MAIN WEBSOCKET HANDLER with STREAMING STT ===
+// === STREAMING STT HANDLER ===
 wss.on('connection', ws => {
   console.log('WebSocket client connected');
 
-  let recognizeStream = null;
   let sttTranscript = '';
   let sttFinalized = false;
 
-  // Start Google Streaming Recognize
-  function startStreamingSTT() {
-    sttTranscript = '';
-    sttFinalized = false;
-    recognizeStream = speechClient
-      .streamingRecognize({
-        config: {
-          encoding: 'LINEAR16',
-          sampleRateHertz: 24000,
-          languageCode: 'en-US',
-        },
-        interimResults: true,
-        singleUtterance: false,
-      })
-      .on('error', err => {
-        console.error('Google STT error:', err);
-        ws.send('STT Error: ' + err.message);
-        ws.close();
-      })
-      .on('data', data => {
-        if (data.results[0] && data.results[0].alternatives[0]) {
-          const transcript = data.results[0].alternatives[0].transcript;
-          ws.send(JSON.stringify({
-            type: data.results[0].isFinal ? 'final' : 'interim',
-            transcript
-          }));
-          if (data.results[0].isFinal) {
-            sttTranscript += transcript + '\n';
-            sttFinalized = true;
-          }
-        }
-      });
-  }
-
-  // Start STT stream on connect
-  startStreamingSTT();
-
-  ws.on('message', async (data, isBinary) => {
-    // Binary = audio chunk from ESP32
-    if (isBinary && recognizeStream && !sttFinalized) {
-      recognizeStream.write(data);
-    } else if (!isBinary && data.toString() === "done") {
-      // End of utterance
-      if (recognizeStream && !sttFinalized) {
-        recognizeStream.end();
+  // Create Google streamingRecognize stream
+  const recognizeStream = speechClient.streamingRecognize({
+    config: {
+      encoding: 'LINEAR16',
+      sampleRateHertz: 24000,
+      languageCode: 'en-US',
+    },
+    interimResults: true,
+    singleUtterance: false,
+  })
+  .on('error', err => {
+    console.error('Google STT error:', err);
+    ws.send('STT Error: ' + err.message);
+    ws.close();
+  })
+  .on('data', data => {
+    if (data.results[0] && data.results[0].alternatives[0]) {
+      const transcript = data.results[0].alternatives[0].transcript;
+      ws.send(JSON.stringify({
+        type: data.results[0].isFinal ? 'final' : 'interim',
+        transcript
+      }));
+      if (data.results[0].isFinal) {
+        sttTranscript += transcript + '\n';
         sttFinalized = true;
       }
+    }
+  });
 
-      // Wait a moment for any final STT results
+  ws.on('message', async (data, isBinary) => {
+    if (isBinary && !sttFinalized) {
+      recognizeStream.write(data);
+    } else if (!isBinary && data.toString() === "done") {
+      // End the Google STT stream
+      recognizeStream.end();
+      sttFinalized = true;
+
+      // Wait a moment for any final STT results to arrive
       setTimeout(async () => {
-        // Use the STT transcript (could also use interim if needed)
         const transcription = sttTranscript.trim();
         console.log('Final transcription:', transcription);
         if (!transcription) {
@@ -125,7 +112,7 @@ wss.on('connection', ws => {
           return;
         }
 
-        // === 2. CHATGPT (or Gemini) call ===
+        // === 2. CHATGPT RESPONSE (still uses OpenAI GPT) ===
         const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
           method: 'POST',
           headers: {
@@ -149,8 +136,8 @@ wss.on('connection', ws => {
         const wavBuffer = await synthesizeSpeechGoogle(replyText);
 
         // ======= PACED CHUNKED DELIVERY =======
-        const CHUNK_SIZE = 2048;
-        const chunkIntervalMs = 43;
+        const CHUNK_SIZE = 2048; // Should match ESP32
+        const chunkIntervalMs = 43; // ms
 
         let offset = 0;
         const intervalId = setInterval(() => {
@@ -160,7 +147,7 @@ wss.on('connection', ws => {
             offset = end;
           } else {
             clearInterval(intervalId);
-            ws.send('done');
+            ws.send('done'); // Optional: signal end of audio
             console.log('Audio reply sent in paced chunks.');
           }
         }, chunkIntervalMs);
@@ -169,7 +156,7 @@ wss.on('connection', ws => {
   });
 
   ws.on('close', () => {
-    if (recognizeStream) recognizeStream.destroy();
+    recognizeStream.destroy();
     console.log('WebSocket client disconnected');
   });
 });
