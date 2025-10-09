@@ -1,13 +1,8 @@
 import 'dotenv/config';
 import express from 'express';
 import { WebSocketServer } from 'ws';
-import tmp from 'tmp';
-import fs from 'fs/promises';
-import { createReadStream } from 'fs';
-
-// === GOOGLE CLOUD CLIENT LIBRARIES ===
-import speech from '@google-cloud/speech';
 import textToSpeech from '@google-cloud/text-to-speech';
+import speech from '@google-cloud/speech';
 
 // INSTANTIATE GOOGLE CLOUD CLIENTS
 const speechClient = new speech.SpeechClient();
@@ -50,8 +45,8 @@ function addWavHeader(buffer, options = {}) {
 async function synthesizeSpeechGoogle(text) {
   const request = {
     input: { text },
-    voice: { languageCode: 'en-US', ssmlGender: 'FEMALE' }, // Change voice if needed
-    audioConfig: { audioEncoding: 'LINEAR16', sampleRateHertz: 24000 }, // WAV/PCM for ESP32
+    voice: { languageCode: 'en-US', ssmlGender: 'FEMALE' },
+    audioConfig: { audioEncoding: 'LINEAR16', sampleRateHertz: 24000 },
   };
   const [response] = await ttsClient.synthesizeSpeech(request);
   const rawPcmBuffer = Buffer.from(response.audioContent, 'base64');
@@ -112,7 +107,7 @@ wss.on('connection', ws => {
           return;
         }
 
-        // === 2. CHATGPT RESPONSE (still uses OpenAI GPT) ===
+        // === 2. OPENAI RESPONSE (ChatGPT, GPT-4o) ===
         const openaiResponse = await fetch('https://api.openai.com/v1/chat/completions', {
           method: 'POST',
           headers: {
@@ -120,7 +115,7 @@ wss.on('connection', ws => {
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({
-            model: 'gpt-3.5-turbo',
+            model: 'gpt-4o', // Use GPT-4o (or gpt-4/gpt-4-turbo if you prefer)
             messages: [{ role: 'user', content: transcription }]
           })
         });
@@ -137,7 +132,7 @@ wss.on('connection', ws => {
 
         // ======= PACED CHUNKED DELIVERY =======
         const CHUNK_SIZE = 2048; // Should match ESP32
-        const chunkIntervalMs = 43; // ms
+        const chunkIntervalMs = 40; // Send a little faster than real time for smoother playback
 
         let offset = 0;
         const intervalId = setInterval(() => {
@@ -147,7 +142,7 @@ wss.on('connection', ws => {
             offset = end;
           } else {
             clearInterval(intervalId);
-            ws.send('done'); // Optional: signal end of audio
+            ws.send('done');
             console.log('Audio reply sent in paced chunks.');
           }
         }, chunkIntervalMs);
