@@ -23,7 +23,7 @@ app.get('/', (req, res) => res.send('ESP32 ChatGPT Bridge Server Running!'));
 function addWavHeader(buffer, options = {}) {
   const {
     numChannels = 1,
-    sampleRate = 24000,
+    sampleRate = 16000, // Use 16kHz throughout
     bitDepth = 16,
   } = options;
 
@@ -50,12 +50,16 @@ function addWavHeader(buffer, options = {}) {
 async function synthesizeSpeechGoogle(text) {
   const request = {
     input: { text },
-    voice: { languageCode: 'en-US', ssmlGender: 'FEMALE' }, // Change voice if needed
-    audioConfig: { audioEncoding: 'LINEAR16', sampleRateHertz: 24000 }, // WAV/PCM for ESP32
+    voice: { languageCode: 'en-US', ssmlGender: 'FEMALE' },
+    audioConfig: {
+      audioEncoding: 'LINEAR16',
+      sampleRateHertz: 16000,      // 16kHz
+      speakingRate: 0.95,          // slightly slower, more natural
+    },
   };
   const [response] = await ttsClient.synthesizeSpeech(request);
   const rawPcmBuffer = Buffer.from(response.audioContent, 'base64');
-  const wavBuffer = addWavHeader(rawPcmBuffer, { sampleRate: 24000, numChannels: 1, bitDepth: 16 });
+  const wavBuffer = addWavHeader(rawPcmBuffer, { sampleRate: 16000, numChannels: 1, bitDepth: 16 });
   return wavBuffer;
 }
 
@@ -70,7 +74,7 @@ wss.on('connection', ws => {
   const recognizeStream = speechClient.streamingRecognize({
     config: {
       encoding: 'LINEAR16',
-      sampleRateHertz: 24000,
+      sampleRateHertz: 16000, // 16kHz
       languageCode: 'en-US',
     },
     interimResults: true,
