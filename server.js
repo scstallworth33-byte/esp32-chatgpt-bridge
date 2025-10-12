@@ -23,7 +23,7 @@ app.get('/', (req, res) => res.send('ESP32 ChatGPT Bridge Server Running!'));
 function addWavHeader(buffer, options = {}) {
   const {
     numChannels = 1,
-    sampleRate = 16000, // Use 16kHz throughout
+    sampleRate = 24000,
     bitDepth = 16,
   } = options;
 
@@ -50,16 +50,12 @@ function addWavHeader(buffer, options = {}) {
 async function synthesizeSpeechGoogle(text) {
   const request = {
     input: { text },
-    voice: { languageCode: 'en-US', ssmlGender: 'FEMALE' },
-    audioConfig: {
-      audioEncoding: 'LINEAR16',
-      sampleRateHertz: 16000,      // 16kHz
-      speakingRate: 0.95,          // slightly slower, more natural
-    },
+    voice: { languageCode: 'en-US', ssmlGender: 'FEMALE' }, // Change voice if needed
+    audioConfig: { audioEncoding: 'LINEAR16', sampleRateHertz: 24000 }, // WAV/PCM for ESP32
   };
   const [response] = await ttsClient.synthesizeSpeech(request);
   const rawPcmBuffer = Buffer.from(response.audioContent, 'base64');
-  const wavBuffer = addWavHeader(rawPcmBuffer, { sampleRate: 16000, numChannels: 1, bitDepth: 16 });
+  const wavBuffer = addWavHeader(rawPcmBuffer, { sampleRate: 24000, numChannels: 1, bitDepth: 16 });
   return wavBuffer;
 }
 
@@ -74,7 +70,7 @@ wss.on('connection', ws => {
   const recognizeStream = speechClient.streamingRecognize({
     config: {
       encoding: 'LINEAR16',
-      sampleRateHertz: 16000, // 16kHz
+      sampleRateHertz: 24000,
       languageCode: 'en-US',
     },
     interimResults: true,
@@ -139,17 +135,22 @@ wss.on('connection', ws => {
         // === 3. SYNTHESIZE REPLY WITH GOOGLE TTS and ADD WAV HEADER ===
         const wavBuffer = await synthesizeSpeechGoogle(replyText);
 
-        // ======= FAST CHUNKED DELIVERY =======
+        // ======= PACED CHUNKED DELIVERY =======
         const CHUNK_SIZE = 2048; // Should match ESP32
+        const chunkIntervalMs = 43; // ms
 
         let offset = 0;
-        while (offset < wavBuffer.length) {
-          const end = Math.min(offset + CHUNK_SIZE, wavBuffer.length);
-          ws.send(wavBuffer.slice(offset, end), { binary: true });
-          offset = end;
-        }
-        ws.send('done');
-        console.log('Audio reply sent in fast chunks.');
+        const intervalId = setInterval(() => {
+          if (offset < wavBuffer.length) {
+            const end = Math.min(offset + CHUNK_SIZE, wavBuffer.length);
+            ws.send(wavBuffer.slice(offset, end), { binary: true });
+            offset = end;
+          } else {
+            clearInterval(intervalId);
+            ws.send('done'); // Optional: signal end of audio
+            console.log('Audio reply sent in paced chunks.');
+          }
+        }, chunkIntervalMs);
       }, 800);
     }
   });
