@@ -137,8 +137,8 @@ wss.on('connection', ws => {
 
         // ======= IMPROVED PACED CHUNKED DELIVERY WITH BURST =======
         const CHUNK_SIZE = 2048; // Should match ESP32
-        const chunkIntervalMs = 43; // ms for pacing
-        const BURST_CHUNKS = 20; // Burst first 20 chunks (~860ms at 24kHz)
+        const chunkIntervalMs = 40; // ms for pacing
+        const BURST_CHUNKS = 40; // Burst first 20 chunks (~860ms at 24kHz)
         let offset = 0;
         let chunkCount = 0;
 
