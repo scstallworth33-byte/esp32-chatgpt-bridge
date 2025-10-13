@@ -136,9 +136,9 @@ wss.on('connection', ws => {
         const wavBuffer = await synthesizeSpeechGoogle(replyText);
 
         // ======= IMPROVED PACED CHUNKED DELIVERY WITH BURST =======
-        const CHUNK_SIZE = 2048; // Should match ESP32
-        const chunkIntervalMs = 40; // ms for pacing
-        const BURST_CHUNKS = 40; // Burst first 20 chunks (~860ms at 24kHz)
+        const CHUNK_SIZE = 4096; // Should match ESP32
+        const chunkIntervalMs = 39; // ms for pacing
+        const BURST_CHUNKS = 60; // Burst first 20 chunks (~860ms at 24kHz)
         let offset = 0;
         let chunkCount = 0;
 
