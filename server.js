@@ -59,15 +59,6 @@ async function synthesizeSpeechGoogle(text) {
   return wavBuffer;
 }
 
-// === COMMAND DETECTION UTILITY ===
-function detectCommand(transcription) {
-  const text = transcription.trim().toLowerCase();
-  if (text === "begin") return "start_conversation";
-  if (text === "end") return "end_conversation";
-  // Add more commands here as needed (expandable!)
-  return null;
-}
-
 // === STREAMING STT HANDLER ===
 wss.on('connection', ws => {
   console.log('WebSocket client connected');
@@ -118,17 +109,6 @@ wss.on('connection', ws => {
         console.log('Final transcription:', transcription);
         if (!transcription) {
           ws.send('No speech detected!');
-          return;
-        }
-
-        // === COMMAND DETECTION ===
-        const command = detectCommand(transcription);
-        if (command === "start_conversation") {
-          ws.send(JSON.stringify({ type: "command", command: "start_conversation" }));
-          return;
-        }
-        if (command === "end_conversation") {
-          ws.send(JSON.stringify({ type: "command", command: "end_conversation" }));
           return;
         }
 
