@@ -135,16 +135,32 @@ wss.on('connection', ws => {
         // === 3. SYNTHESIZE REPLY WITH GOOGLE TTS and ADD WAV HEADER ===
         const wavBuffer = await synthesizeSpeechGoogle(replyText);
 
-        // ======= SEND ALL AUDIO AT ONCE (NO DELAY) =======
+        // ======= IMPROVED PACED CHUNKED DELIVERY WITH BURST =======
         const CHUNK_SIZE = 2048; // Should match ESP32
+        const chunkIntervalMs = 39; // ms for pacing
+        const BURST_CHUNKS = 60; // Burst first 20 chunks (~860ms at 24kHz)
         let offset = 0;
-        while (offset < wavBuffer.length) {
-          const end = Math.min(offset + CHUNK_SIZE, wavBuffer.length);
-          ws.send(wavBuffer.slice(offset, end), { binary: true });
-          offset = end;
+        let chunkCount = 0;
+
+        function sendNextChunk() {
+          if (offset < wavBuffer.length) {
+            const end = Math.min(offset + CHUNK_SIZE, wavBuffer.length);
+            ws.send(wavBuffer.slice(offset, end), { binary: true });
+            offset = end;
+            chunkCount++;
+            if (chunkCount < BURST_CHUNKS) {
+              // Fast burst for first N chunks
+              setImmediate(sendNextChunk);
+            } else {
+              // After burst, pace normally
+              setTimeout(sendNextChunk, chunkIntervalMs);
+            }
+          } else {
+            ws.send('done');
+            console.log('Audio reply sent in burst + paced chunks.');
+          }
         }
-        ws.send('done');
-        console.log('Audio reply sent as fast as possible, all at once.');
+        sendNextChunk();
 
       }, 800);
     }
