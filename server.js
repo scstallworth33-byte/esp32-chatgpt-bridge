@@ -1,4 +1,4 @@
-import 'dotenv/config';
+﻿import 'dotenv/config';
 import express from 'express';
 import { WebSocketServer } from 'ws';
 import tmp from 'tmp';
@@ -135,33 +135,22 @@ wss.on('connection', ws => {
         // === 3. SYNTHESIZE REPLY WITH GOOGLE TTS and ADD WAV HEADER ===
         const wavBuffer = await synthesizeSpeechGoogle(replyText);
 
-        // ======= IMPROVED PACED CHUNKED DELIVERY WITH BURST =======
+        // ======= PACED CHUNKED DELIVERY =======
         const CHUNK_SIZE = 2048; // Should match ESP32
-        const chunkIntervalMs = 39; // ms for pacing
-        const BURST_CHUNKS = 60; // Burst first 20 chunks (~860ms at 24kHz)
-        let offset = 0;
-        let chunkCount = 0;
+        const chunkIntervalMs = 43; // ms
 
-        function sendNextChunk() {
+        let offset = 0;
+        const intervalId = setInterval(() => {
           if (offset < wavBuffer.length) {
             const end = Math.min(offset + CHUNK_SIZE, wavBuffer.length);
             ws.send(wavBuffer.slice(offset, end), { binary: true });
             offset = end;
-            chunkCount++;
-            if (chunkCount < BURST_CHUNKS) {
-              // Fast burst for first N chunks
-              setImmediate(sendNextChunk);
-            } else {
-              // After burst, pace normally
-              setTimeout(sendNextChunk, chunkIntervalMs);
-            }
           } else {
-            ws.send('done');
-            console.log('Audio reply sent in burst + paced chunks.');
+            clearInterval(intervalId);
+            ws.send('done'); // Optional: signal end of audio
+            console.log('Audio reply sent in paced chunks.');
           }
-        }
-        sendNextChunk();
-
+        }, chunkIntervalMs);
       }, 800);
     }
   });
