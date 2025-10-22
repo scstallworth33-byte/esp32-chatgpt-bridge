@@ -1,4 +1,4 @@
-﻿import 'dotenv/config';
+import 'dotenv/config';
 import express from 'express';
 import { WebSocketServer } from 'ws';
 import tmp from 'tmp';
@@ -171,4 +171,3 @@ wss.on('connection', ws => {
     console.log('WebSocket client disconnected');
   });
 });
-
