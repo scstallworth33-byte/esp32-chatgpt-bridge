@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
-import { WebSocketServer, WebSocket } from 'ws';
+import { WebSocketServer } from 'ws';
 import { OpenAI } from 'openai';
 import tmp from 'tmp';
 import fs from 'fs/promises';
@@ -15,146 +15,6 @@ const wss = new WebSocketServer({ server });
 
 app.get('/', (req, res) => res.send('ESP32 ChatGPT Bridge Server Running!'));
 
-const CHUNK_SIZE = 2048; // must match device CHUNK_SIZE
-const BYTES_PER_SAMPLE_DEFAULT = 2; // 16-bit default
-
-function computeChunkIntervalMs(chunkSizeBytes, sampleRateHz, bytesPerSample = BYTES_PER_SAMPLE_DEFAULT) {
-  const secondsPerChunk = chunkSizeBytes / (sampleRateHz * bytesPerSample);
-  return Math.round(secondsPerChunk * 1000);
-}
-
-function sleepMs(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// Read WAV header fields (assumes standard 44-byte header)
-function parseWavHeader(buffer) {
-  if (!buffer || buffer.length < 44) {
-    return null;
-  }
-  const channels = buffer.readUInt16LE(22);
-  const sampleRate = buffer.readUInt32LE(24);
-  const bitsPerSample = buffer.readUInt16LE(34);
-  return { channels, sampleRate, bitsPerSample };
-}
-
-// Create a 44-byte WAV header buffer for PCM (little-endian)
-function createWavHeader(bytesLength, sampleRate = 24000, channels = 1, bitsPerSample = 16) {
-  const blockAlign = channels * bitsPerSample / 8;
-  const byteRate = sampleRate * blockAlign;
-  const header = Buffer.alloc(44);
-
-  // "RIFF"
-  header.write('RIFF', 0);
-  header.writeUInt32LE(36 + bytesLength, 4); // file size - 8
-  header.write('WAVE', 8);
-  header.write('fmt ', 12);
-  header.writeUInt32LE(16, 16); // Subchunk1Size (16 for PCM)
-  header.writeUInt16LE(1, 20);  // AudioFormat 1 = PCM
-  header.writeUInt16LE(channels, 22);
-  header.writeUInt32LE(sampleRate, 24);
-  header.writeUInt32LE(byteRate, 28);
-  header.writeUInt16LE(blockAlign, 32);
-  header.writeUInt16LE(bitsPerSample, 34);
-  header.write('data', 36);
-  header.writeUInt32LE(bytesLength, 40);
-
-  return header;
-}
-
-async function writePcmAsWavFile(filePath, pcmBuffer, sampleRate = 24000, channels = 1, bitsPerSample = 16) {
-  const header = createWavHeader(pcmBuffer.length, sampleRate, channels, bitsPerSample);
-  const wav = Buffer.concat([header, pcmBuffer]);
-  await fs.writeFile(filePath, wav);
-}
-
-async function sendWavBufferPaced(ws, wavBuffer, options = {}) {
-  const {
-    chunkSize = CHUNK_SIZE,
-    burstPercent = 0.8,
-    debug = true,
-    handshakeTimeoutMs = 3000
-  } = options;
-
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
-    if (debug) console.warn('WebSocket not open, abort send');
-    return;
-  }
-
-  const header = parseWavHeader(wavBuffer);
-  const sampleRate = header ? header.sampleRate : 24000;
-  const bitsPerSample = header ? header.bitsPerSample : 16;
-  const bytesPerSample = Math.max(1, bitsPerSample / 8);
-
-  const chunkIntervalMs = computeChunkIntervalMs(chunkSize, sampleRate, bytesPerSample);
-  const totalChunks = Math.ceil(wavBuffer.length / chunkSize);
-  const burstChunks = Math.max(1, Math.floor(totalChunks * burstPercent));
-
-  if (debug) {
-    console.info(`[sendWav] totalBytes=${wavBuffer.length} sampleRate=${sampleRate} bits=${bitsPerSample}`);
-    console.info(`[sendWav] chunkSize=${chunkSize} totalChunks=${totalChunks} chunkIntervalMs=${chunkIntervalMs} burstChunks=${burstChunks}`);
-  }
-
-  // Optional handshake: listen briefly for a client "ready" message
-  let readyReceived = false;
-  function onMessageForHandshake(msg) {
-    try {
-      const s = (typeof msg === 'string') ? msg : msg.toString();
-      if (s === 'ready') {
-        readyReceived = true;
-        if (debug) console.info(`[sendWav] Received 'ready' from client`);
-      }
-    } catch (e) {}
-  }
-  ws.on('message', onMessageForHandshake);
-
-  const startWait = Date.now();
-  while (!readyReceived && (Date.now() - startWait) < handshakeTimeoutMs) {
-    if (ws.readyState !== WebSocket.OPEN) break;
-    await sleepMs(50);
-  }
-  if (!readyReceived && debug) {
-    console.info(`[sendWav] client did not send 'ready' within ${handshakeTimeoutMs}ms, continuing anyway`);
-  }
-
-  // Fast burst for initial portion
-  let chunkIndex = 0;
-  try {
-    for (; chunkIndex < burstChunks; chunkIndex++) {
-      if (ws.readyState !== WebSocket.OPEN) throw new Error('socket closed during burst');
-      const start = chunkIndex * chunkSize;
-      const end = Math.min(start + chunkSize, wavBuffer.length);
-      const chunkBuf = wavBuffer.slice(start, end);
-      ws.send(chunkBuf, { binary: true });
-      if (debug) console.info(`[sendWav] burst sent chunk ${chunkIndex} bytes=${chunkBuf.length}`);
-    }
-
-    // Paced tail: send each remaining chunk and wait chunkIntervalMs
-    for (; chunkIndex < totalChunks; chunkIndex++) {
-      if (ws.readyState !== WebSocket.OPEN) throw new Error('socket closed during paced send');
-      const start = chunkIndex * chunkSize;
-      const end = Math.min(start + chunkSize, wavBuffer.length);
-      const chunkBuf = wavBuffer.slice(start, end);
-      const before = Date.now();
-      ws.send(chunkBuf, { binary: true });
-      if (debug) console.info(`[sendWav] paced sent chunk ${chunkIndex} bytes=${chunkBuf.length} at ${new Date().toISOString()}`);
-      const elapsed = Date.now() - before;
-      const toSleep = Math.max(0, chunkIntervalMs - elapsed);
-      if (toSleep > 0) await sleepMs(toSleep);
-    }
-
-    // send done signal
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'done' }));
-      if (debug) console.info('[sendWav] sent done');
-    }
-  } catch (err) {
-    console.warn('[sendWav] send aborted:', err && err.message ? err.message : err);
-  } finally {
-    try { ws.removeListener('message', onMessageForHandshake); } catch (e) {}
-  }
-}
-
 wss.on('connection', ws => {
   console.log('WebSocket client connected');
   let audioChunks = [];
@@ -163,31 +23,17 @@ wss.on('connection', ws => {
     if (isBinary) {
       audioChunks.push(data);
     } else {
-      const text = data.toString();
-      if (text === "done") {
+      // Expect "done" as a signal to start processing
+      if (data.toString() === "done") {
         console.log('Received "done" from client, assembling WAV file...');
         if (audioChunks.length === 0) {
           ws.send('No audio received!');
           return;
         }
 
-        // The ESP is sending raw 16-bit PCM frames (mono). We must prepend a WAV header before giving to Whisper.
-        // Adjust sampleRate/channels/bitsPerSample here if ESP uses different parameters.
-        const sampleRate = 24000;
-        const channels = 1;
-        const bitsPerSample = 16;
-        const fullBuf = Buffer.concat(audioChunks);
-
-        // Create temp wav path and write proper WAV (header + pcm)
+        // Save the received WAV file to a temp location
         const wavFile = tmp.tmpNameSync({ postfix: '.wav' });
-        try {
-          await writePcmAsWavFile(wavFile, fullBuf, sampleRate, channels, bitsPerSample);
-        } catch (err) {
-          console.error('Failed to write WAV file:', err);
-          ws.send('Error: failed to create WAV file');
-          audioChunks = [];
-          return;
-        }
+        await fs.writeFile(wavFile, Buffer.concat(audioChunks));
 
         try {
           // Transcribe using OpenAI Whisper
@@ -207,7 +53,7 @@ wss.on('connection', ws => {
           const replyText = chatRes.choices[0].message.content;
           console.log('ChatGPT reply:', replyText);
 
-          // Generate TTS audio using OpenAI (WAV)
+          // Generate TTS audio using OpenAI (WAV format, female voice 'nova')
           const ttsRes = await fetch('https://api.openai.com/v1/audio/speech', {
             method: 'POST',
             headers: {
@@ -217,7 +63,7 @@ wss.on('connection', ws => {
             body: JSON.stringify({
               model: 'tts-1',
               input: replyText,
-              voice: 'nova', // female voice
+              voice: 'nova', // <<--- FEMALE VOICE
               response_format: 'wav'
             })
           });
@@ -228,8 +74,8 @@ wss.on('connection', ws => {
           }
           const wavBuffer = Buffer.from(await ttsRes.arrayBuffer());
 
-          // Use paced send (sliced) instead of sending whole buffer
-          await sendWavBufferPaced(ws, wavBuffer, { chunkSize: CHUNK_SIZE, burstPercent: 0.8, debug: true });
+          // Send WAV back as binary over WebSocket -- to this client only
+          ws.send(wavBuffer, { binary: true });
 
           // Clean up temp file
           await fs.unlink(wavFile);
@@ -240,14 +86,8 @@ wss.on('connection', ws => {
           } else {
             console.error('Error:', err);
           }
-          ws.send('Error: ' + (err.message || String(err)));
-        } finally {
-          audioChunks = [];
+          ws.send('Error: ' + err.message);
         }
-      } else if (text === 'ready') {
-        console.log('Client reported ready to receive burst.');
-      } else {
-        console.log(`[WS Text] ${text}`);
       }
     }
   });
