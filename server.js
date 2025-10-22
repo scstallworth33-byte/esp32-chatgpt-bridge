@@ -38,6 +38,36 @@ function parseWavHeader(buffer) {
   return { channels, sampleRate, bitsPerSample };
 }
 
+// Create a 44-byte WAV header buffer for PCM (little-endian)
+function createWavHeader(bytesLength, sampleRate = 24000, channels = 1, bitsPerSample = 16) {
+  const blockAlign = channels * bitsPerSample / 8;
+  const byteRate = sampleRate * blockAlign;
+  const header = Buffer.alloc(44);
+
+  // "RIFF"
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + bytesLength, 4); // file size - 8
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16); // Subchunk1Size (16 for PCM)
+  header.writeUInt16LE(1, 20);  // AudioFormat 1 = PCM
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(bytesLength, 40);
+
+  return header;
+}
+
+async function writePcmAsWavFile(filePath, pcmBuffer, sampleRate = 24000, channels = 1, bitsPerSample = 16) {
+  const header = createWavHeader(pcmBuffer.length, sampleRate, channels, bitsPerSample);
+  const wav = Buffer.concat([header, pcmBuffer]);
+  await fs.writeFile(filePath, wav);
+}
+
 async function sendWavBufferPaced(ws, wavBuffer, options = {}) {
   const {
     chunkSize = CHUNK_SIZE,
@@ -141,10 +171,23 @@ wss.on('connection', ws => {
           return;
         }
 
-        // Save the received WAV file to a temp location
-        const wavFile = tmp.tmpNameSync({ postfix: '.wav' });
+        // The ESP is sending raw 16-bit PCM frames (mono). We must prepend a WAV header before giving to Whisper.
+        // Adjust sampleRate/channels/bitsPerSample here if ESP uses different parameters.
+        const sampleRate = 24000;
+        const channels = 1;
+        const bitsPerSample = 16;
         const fullBuf = Buffer.concat(audioChunks);
-        await fs.writeFile(wavFile, fullBuf);
+
+        // Create temp wav path and write proper WAV (header + pcm)
+        const wavFile = tmp.tmpNameSync({ postfix: '.wav' });
+        try {
+          await writePcmAsWavFile(wavFile, fullBuf, sampleRate, channels, bitsPerSample);
+        } catch (err) {
+          console.error('Failed to write WAV file:', err);
+          ws.send('Error: failed to create WAV file');
+          audioChunks = [];
+          return;
+        }
 
         try {
           // Transcribe using OpenAI Whisper
